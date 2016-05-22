@@ -1,0 +1,173 @@
+#+OPTIONS: num:t todo:nil tasks:nil
+#+OPTIONS: toc:nil
+#+OPTIONS: H:4
+#+TITLE: Age distribution ribbon
+#+AUTHOR: Stephen E Lane
+#+EMAIL: lane.s@unimelb.edu.au
+
+#+HTML_MATHJAX: align: left tagindent: 5em tagside: right font: Neo-Euler
+
+#+BEGIN_abstract
+Investigates age distribution by a ribbon-style graph. Inspiration from [[http://www.sbs.com.au/news/interactive/where-do-you-fit]] and [[http://flowingdata.com/2016/05/10/who-is-older-and-younger-than-you/]].
+#+END_abstract
+
+#+TOC: headlines 2
+
+#+LATEX: \listoftables
+#+LATEX: \listoffigures
+#+LATEX_CLASS: article
+#+LATEX_CLASS_OPTIONS: [a4paper,10pt]
+#+LATEX_HEADER: \usepackage{palatino}
+#+LATEX_HEADER: \usepackage[margin=15pt,font=small,labelfont=bf]{caption}
+#+LATEX_HEADER: \usepackage{booktabs}
+#+LATEX_HEADER: \usepackage[margin=25mm]{geometry}
+#+LATEX_HEADER: \usepackage{setspace}
+
+* Introduction
+
+I found these [[http://www.sbs.com.au/news/interactive/where-do-you-fit][two]] [[http://flowingdata.com/2016/05/10/who-is-older-and-younger-than-you/][figures]] via twitter today, and found them interesting. It got me thinking though: the median age in Australia is around 37, and it appears that's the case in the US as well. It hasn't always been this way though. So how about we get the data and investigate this further. Perhaps we can also create a dynamic visualisation of the changes over time?
+
+You'll need the following libraries to run this:
+
+#+BEGIN_SRC R :session :exports both :results output
+  library(dplyr)
+  library(tidyr)
+  library(readxl)
+  library(lubridate)
+#+END_SRC
+
+* Get the data
+
+I'm going to use the ABS data: [[http://www.abs.gov.au/AUSSTATS/abs@.nsf/DetailsPage/3101.0Sep%202015?OpenDocument][ABS 3101.0 - Australian Demographic Statistics, Sep 2015]]. We want Table 59, /Estimated Resident Population By Single Year Of Age, Australia/:
+
+#+BEGIN_SRC R :wrap
+  download.file(paste0("http://www.abs.gov.au/ausstats/abs@archive.nsf/",
+                       "log?openagent&3101059.xls&3101.0&Time%20Series%20Spreadsheet",
+                       "&57B05718B8F36626CA257F7F001DA044&0&Sep%202015",
+                       "&24.03.2016&Latest", "../data-raw/pop.xls"))
+#+END_SRC
+
+So, ABS spreadsheets are generally pretty terrible. There's a lot of extraneous stuff in them: formatting, descriptions of columns being placed in the first few rows etc. Ugh. So in this particular file, rows 2:10 contain a whole heap of metadata that shouldn't really be in the data sheets. Put them somewhere else ABS! So let's remove them, and then we'll rename the columns so that they're more useable (break out your regexp-fu!):
+
+#+BEGIN_SRC R :session :exports code
+  capture.output(
+      pop <- readxl::read_excel("../data-raw/pop.xls", sheet = "Data1"),
+      file = "/dev/null")
+  pop <- pop[-c(1:9),]
+  nm <- names(pop)
+  nm[1] <- "Year"
+  ## Strip off the ERP part
+  erp <- regexpr(" ;  ", nm)
+  nm <- substring(nm, erp + attr(erp, "match.length"))
+  ## Remove spaces, the extra bits on 100 year olds, and the trailing semi-colon
+  nm <- gsub("[[:space:]]|and|over|;$", "", nm)
+  names(pop) <- nm
+  ## Remove persons as we can calculate those later
+  pop <- pop %>% select(-contains("Persons"))
+  pop <- bind_cols(
+      lubridate::year(as.Date(as.integer(pop[[1]]), origin = "1900-01-01")) %>%
+      data_frame(year = .),
+      lapply(pop[, -1], as.integer) %>% as_data_frame)
+#+END_SRC
+
+So what we've done is remove whitespace from the column names, as well as the trailing semi-colon. We've then dropped any of the =Persons= variables, as they're split over two sheets, and we can obviously reconstruct those by summing =males= and =females=. We've then converted the variables to appropriate formats. *Note*: in reading in the spreadsheet, it prints out a whole heap of ~DEFINEDNAME~ lines, the ~capture.output~ wrapper justs sends those to the ~NULL~ device.
+
+** Tidy the data
+
+We currently have the data with one column containing the estimated resident population per age per sex. Let's tidy it up so that we have an =age= variable, a =sex= variable and a =count= variable:
+
+#+BEGIN_SRC R :session :exports both :results output
+  pop <- pop %>% gather(sexAge, counts, -1) %>%
+      separate(sexAge, c("sex", "age"), sep = ";", convert = TRUE)
+#+END_SRC
+
+Whoops! We forgot to calculate the total persons column. It'll also be easier to calculate the proportions we require if the data are in /wide/ format:
+
+#+BEGIN_SRC R :session :exports both :results output
+  popWide <- pop %>% spread(sex, counts) %>%
+      mutate(Persons = Female + Male)
+  popTotals <- popWide %>% group_by(year) %>%
+      summarise(Female = sum(Female),
+                Male = sum(Male),
+                Persons = sum(Persons)
+                )
+#+END_SRC
+
+Let's now define a function that outputs the percentages we want, given a dataset containing only one year. Recall for a given age, we want the percentage of individuals currently at that age, the percentage of individuals below that age, and the percentage of individuals above that age. Here's that function definition:
+
+#+BEGIN_SRC R :session :exports code :tangle ../R/calcPercentages.R
+  #' Calculates age proportion distributions
+  #'
+  #' \code{calcPercentages} calculates the proportions of individuals aged 0-100,
+  #' as well as the proportion aged less, and greater than each age.
+  #'
+  #' @param data is a data frame of population counts per age, with the counts
+  #' given in fields which must be named \code{Female}, \code{Male} and
+  #' \code{Persons}. Each row corresponds to each year of age from 0-100.
+
+  calcPercentages <- function(data){
+      ## First, we need the total population in this year
+      popTotals <- colSums(data %>% select(Female, Male, Persons))
+      ## Now we need to loop over each row and perform the calculations
+      ## Lets set up a local function that does that.
+      localPerc <- function(i, pops, tot){
+          if(i == 1){
+              inAge <- pops[i] / tot
+              belowAge <- 0
+              aboveAge <- sum(pops[-i]) / tot
+          } else if(i == length(pops)){
+              inAge <- pops[i] / tot
+              belowAge <- sum(pops[-i]) / tot
+              aboveAge <- 0
+          } else {
+              inAge <- pops[i] / tot
+              belowAge <- sum(pops[c(1:(i - 1))]) / tot
+              aboveAge <- sum(pops[c((i + 1):length(pops))]) / tot
+          }
+          c(inAge, belowAge, aboveAge)
+      }
+      females <- sapply(seq_len(nrow(data)), localPerc,
+                        pops = data$Female, tot = popTotals["Female"])
+      males <- sapply(seq_len(nrow(data)), localPerc,
+                      pops = data$Male, tot = popTotals["Male"])
+      persons <- sapply(seq_len(nrow(data)), localPerc,
+                        pops = data$Persons, tot = popTotals["Persons"])
+      data <- data %>%
+          mutate(femaleIn = females[1,],
+                 femaleBelow = females[2,],
+                 femaleAbove = females[3,],
+                 maleIn = males[1,],
+                 maleBelow = males[2,],
+                 maleAbove = males[3,],
+                 personsIn = persons[1,],
+                 personsBelow = persons[2,],
+                 personsAbove = persons[3,]
+                 )
+      data
+  }
+#+END_SRC
+
+You'll notice in this function definition that I've added =roxygen= comments. As I'm using [[https://www.gnu.org/software/emacs/][Emacs]] [[http://www.orgmode.org/][Org mode]] to write this document, I can add a src_org{:tangle ../R/calcPercentages.R} to the header for this code block, which when tangled (~C-c C-v t~) produce the =.R= file in the =/R/= directory, which can then be converted to =.Rd= documentation using ~devtools::document()~.
+
+* Create some plots
+
+We're now in a position to start looking at plotting the data :) Let's first look at the latest years data, which is src_r[:session]{max(popWide$year)}. First we'll create the data using the function src_r{calcPercentages()} that we just wrote:
+
+#+BEGIN_SRC R :session :exports both :results output
+  data2015 <- calcPercentages(popWide %>% filter(year == 2015))
+#+END_SRC
+
+A very basic plot of this data looks like that shown in Figure [[fig:ribbon1]], with the code to produce it as below:
+
+#+BEGIN_SRC R :session :exports code :results graphics :file ribbon1.png
+  pl <- ggplot(data2015, aes(x = age, ymax = femaleAbove, ymin = 0)) +
+      geom_ribbon(fill = "#bcbddc") +
+      geom_ribbon(aes(x = age, ymin = -femaleBelow, ymax = 0), data = data2015,
+                  fill = "#756bb1")
+  print(pl)
+#+END_SRC
+#+CAPTION: Simple ribbon plot of the proportion of females above and below each year of age.
+#+LABEL: fig:ribbon1
+#+RESULTS: fig:ribbon1
+[[file:ribbon1.png]]
+
