@@ -151,7 +151,7 @@ You'll notice in this function definition that I've added =roxygen= comments. As
 
 * Create some plots
 
-We're now in a position to start looking at plotting the data :) Let's first look at the latest years data, which is src_r[:session]{max(popWide$year)}. First we'll create the data using the function src_r{calcPercentages()} that we just wrote:
+We're now in a position to start looking at plotting the data :) Let's first look at the latest years data, which is SRC_R[:session]{max(popWide$year)}. First we'll create the data using the function src_r[:exports code]{calcPercentages()} that we just wrote:
 
 #+BEGIN_SRC R :session :exports both :results output
   data2015 <- calcPercentages(popWide %>% filter(year == 2015))
