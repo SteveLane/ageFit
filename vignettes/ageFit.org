@@ -34,6 +34,7 @@ You'll need the following libraries to run this:
   library(tidyr)
   library(readxl)
   library(lubridate)
+  library(ggplot2)
 #+END_SRC
 
 * Get the data
@@ -159,7 +160,7 @@ We're now in a position to start looking at plotting the data :) Let's first loo
 
 A very basic plot of this data looks like that shown in Figure [[fig:ribbon1]], with the code to produce it as below:
 
-#+BEGIN_SRC R :session :exports code :results graphics :file ribbon1.png
+#+BEGIN_SRC R :session :exports none :results graphics :file ribbon1.png
   pl <- ggplot(data2015, aes(x = age, ymax = femaleAbove, ymin = 0)) +
       geom_ribbon(fill = "#bcbddc") +
       geom_ribbon(aes(x = age, ymin = -femaleBelow, ymax = 0), data = data2015,
@@ -170,4 +171,3 @@ A very basic plot of this data looks like that shown in Figure [[fig:ribbon1]], 
 #+LABEL: fig:ribbon1
 #+RESULTS: fig:ribbon1
 [[file:ribbon1.png]]
-
